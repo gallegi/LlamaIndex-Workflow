@@ -19,8 +19,8 @@ We start with out_of_the_box.py, a pre-built query engine from LlamaIndex Workfl
 
 1. Clone the repository:
     ```sh
-    git clone https://github.com/yourusername/llamaindex-workflow-showcase.git
-    cd llamaindex-workflow-showcase
+    git clone https://github.com/gallegi/LlamaIndex-Workflow.git
+    cd LlamaIndex-Workflow
     ```
 
 2. Install the required dependencies:
