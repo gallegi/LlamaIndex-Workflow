@@ -1,0 +1,7 @@
+torch
+transformers
+llama-index
+llama-index-core
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
+llama-index-postprocessor-colbert-rerank

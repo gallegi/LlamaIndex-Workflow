@@ -1,43 +1,21 @@
 import asyncio
-
+import time
 from typing import List
 
 from llama_index.readers.web import BeautifulSoupWebReader
-from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core import VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core.schema import NodeRelationship, NodeWithScore, QueryBundle
+from llama_index.core.schema import NodeWithScore
 from llama_index.llms.ollama import Ollama
-from llama_index.core.workflow import Context
+from llama_index.core.workflow import Context, Event, StartEvent, StopEvent, Workflow, step
+from llama_index.utils.workflow import draw_all_possible_flows
 
-
-from llama_index.core.workflow import (
-    Event,
-    StartEvent,
-    StopEvent,
-    Workflow,
-    step,
-)
-from llama_index.utils.workflow import (
-    draw_all_possible_flows,
-    draw_most_recent_execution,
-)
-
+# Load documents using BeautifulSoupWebReader
 reader = BeautifulSoupWebReader()
-documents = reader.load_data(
-        ["https://docs.anthropic.com/claude/docs/tool-use"]
-    )
-llm = Ollama(model="llama3.2:1b", request_timeout=60.0)
+documents = reader.load_data(["https://docs.llamaindex.ai/en/stable/getting_started/customization/"])
 
 class RetrievalEvent(Event):
     nodes: List[NodeWithScore]
-
-index = VectorStoreIndex.from_documents(
-    documents,
-    embed_model=HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
-)
-retriever = index.as_retriever(similarity_top_k=6)
-    
 
 class StandardRAGWorkflow(Workflow):
     DEFAULT_CONTEXT_PROMPT = (
@@ -47,46 +25,51 @@ class StandardRAGWorkflow(Workflow):
         "-----\n"
         "Please write a response to the following question, using the above context:\n"
         "{query_str}\n"
-    ) 
-    
+    )
+
+    def __init__(self, documents, timeout: int = 60, verbose: bool = False):
+        super().__init__(timeout=timeout, verbose=verbose)
+        index = VectorStoreIndex.from_documents(
+            documents,
+            embed_model=HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
+        )
+        self.retriever = index.as_retriever(similarity_top_k=1)
+        self.llm = Ollama(model="llama3.2:1b", request_timeout=60.0)
+
     @step
-    async def aretrieve(self, ctx: Context, ev: StartEvent) -> RetrievalEvent:
-        # retrieve from context
+    async def retrieve(self, ctx: Context, ev: StartEvent) -> RetrievalEvent:
         query_str = ev.query_str
-        nodes = await retriever.aretrieve(query_str)
-        result_ev = RetrievalEvent(nodes=nodes)
+        nodes = await self.retriever.aretrieve(query_str)
         await ctx.set("query_str", query_str)
-        return result_ev
-    
-    def _prepare_query_with_context(
-        self,
-        query_str: str,
-        nodes: List[NodeWithScore],
-    ) -> str:
+        return RetrievalEvent(nodes=nodes)
+
+    def _prepare_query_with_context(self, query_str: str, nodes: List[NodeWithScore]) -> str:
         node_context = ""
         for idx, node in enumerate(nodes):
             node_text = node.get_content(metadata_mode="llm")
             node_context += f"Context Chunk {idx}:\n{node_text}\n\n"
-
-        formatted_context = self.DEFAULT_CONTEXT_PROMPT.format(
-            node_context=node_context, query_str=query_str
-        )
-        
-        return formatted_context
+        return self.DEFAULT_CONTEXT_PROMPT.format(node_context=node_context, query_str=query_str)
 
     @step
-    async def llm_response(self,  ctx: Context, retrieval_ev: RetrievalEvent) -> StopEvent:
+    async def llm_response(self, ctx: Context, retrieval_ev: RetrievalEvent) -> StopEvent:
         nodes = retrieval_ev.nodes
         query_str = await ctx.get("query_str")
         query_with_ctx = self._prepare_query_with_context(query_str, nodes)
-        response = await llm.acomplete(query_with_ctx)
-        return StopEvent(result=str(response))
-    
+        response = await self.llm.astream_complete(query_with_ctx)
+        return StopEvent(result=response)
+
 async def main():
-    workflow = StandardRAGWorkflow(timeout=60)
-    result = await workflow.run(query_str="What is the definition of tool use?")
-    print(result)
-    draw_all_possible_flows(workflow, filename="flow.html")
+    workflow = StandardRAGWorkflow(documents, timeout=60)
+    draw_all_possible_flows(workflow, filename="basic_flow.html")
+    while True:
+        query_str = input("Ask a question: ")  # Example: How to parse my documents into smaller chunk?
+        if query_str == "exit":
+            break
+        response = await workflow.run(query_str=query_str)
+        print("\nAssistant:")
+        async for res in response:
+            print(res.delta, end="", flush=True)
+        print("\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
